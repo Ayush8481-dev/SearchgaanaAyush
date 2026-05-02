@@ -1,0 +1,8 @@
+{
+  "rewrites":[
+    {
+      "source": "/vichitih/go/v2(.*)",
+      "destination": "/api/proxy"
+    }
+  ]
+}
