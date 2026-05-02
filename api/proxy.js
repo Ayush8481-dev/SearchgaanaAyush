@@ -1,48 +1,47 @@
 export default async function handler(req, res) {
-  // 1. Enable CORS for your mobile
+  // 1. Enable CORS for your mobile frontend
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
   try {
-    // 2. Safely grab the EXACT query string you typed in the URL
-    const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
-    const targetUrl = 'https://gsearch.gaana.com/vichitih/go/v2/' + queryString;
+    // 2. Build the correct Gaana URL dynamically and safely grab your queries
+    const urlObj = new URL(req.url, `http://${req.headers.host}`);
+    const targetUrl = 'https://gsearch.gaana.com/vichitih/go/v2/' + urlObj.search;
 
-    // 3. Pretend to be a real Chrome browser from the main Gaana website
+    // 3. Fetch with strict Gaana App Headers
     const response = await fetch(targetUrl, {
       method: 'GET',
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'deviceType': 'GaanaWebApp',
+        'appVersion': 'V5',
         'Origin': 'https://gaana.com',
         'Referer': 'https://gaana.com/',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-        'Connection': 'keep-alive'
+        'Accept-Language': 'en-IN,en;q=0.9,hi-IN;q=0.8,hi;q=0.7'
       }
     });
 
-    // 4. Get the exact text Gaana responded with
-    const data = await response.text();
+    const status = response.status;
+    const text = await response.text();
 
-    // Log it so you can view it in the Vercel Dashboard later
-    console.log("Gaana Status Code:", response.status);
-    console.log("Gaana Response Preview:", data.substring(0, 300));
+    // 4. If Gaana returns an empty page, show a JSON error instead of a white screen
+    if (!text || text.trim() === "") {
+      return res.status(status).json({
+         success: false,
+         error: "Gaana returned a totally blank response. They might require a Cookie or Token.",
+         statusCode: status,
+         requestedUrl: targetUrl
+      });
+    }
 
-    // 5. Send back the exact Content-Type Gaana sent. 
-    // If they sent HTML (an error/captcha), your browser will now display it instead of going blank.
-    const contentType = response.headers.get('content-type') || 'text/plain';
-    res.setHeader('Content-Type', contentType);
-    res.status(response.status).send(data);
+    // 5. If it worked, send the raw JSON Gaana data back to you
+    res.setHeader('Content-Type', 'application/json');
+    res.status(status).send(text);
 
   } catch (error) {
-    res.status(500).json({ error: 'Proxy crashed', details: error.message });
+    res.status(500).json({ success: false, error: 'Proxy code crashed', details: error.message });
   }
 }
