@@ -1,82 +1,92 @@
 export default async function handler(req, res) {
-  // 1. Enable CORS so your mobile app can read the data
+  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    // 2. Extract your custom parameters
-    // Note: It is best to use a "?" in your URL like: /app/?query=Hello
-    let { 
-      query, 
-      type = 'all', 
-      language = 'English,hindi,bhojpuri', 
-      limit = 10, 
-      offset = 0 
-    } = req.query;
+    // 1. Safely extract your parameters
+    let query = req.query.query;
+    let type = req.query.type || 'all';
+    let language = req.query.language || 'English,hindi,bhojpuri';
+    let limit = req.query.limit || 10;
+    let offset = req.query.offset || 0;
 
-    // Safety net: Just in case you forget the "?" in the URL (e.g., /app/query=Hello)
+    // Safety net: In case you use /app/query=Hello instead of /app/?query=Hello
     if (!query && req.url.includes('query=')) {
-       const paramString = req.url.substring(req.url.indexOf('query='));
-       const rawParams = new URLSearchParams(paramString);
-       query = rawParams.get('query');
-       type = rawParams.get('type') || type;
-       language = rawParams.get('language') || language;
-       limit = rawParams.get('limit') || limit;
-       offset = rawParams.get('offset') || offset;
+       const paramStr = req.url.substring(req.url.indexOf('query='));
+       const urlParams = new URLSearchParams(paramStr);
+       query = urlParams.get('query');
+       type = urlParams.get('type') || type;
+       language = urlParams.get('language') || language;
+       limit = urlParams.get('limit') || limit;
+       offset = urlParams.get('offset') || offset;
     }
 
-    // Stop if no query is provided
     if (!query) {
-      return res.status(400).json({ 
-        success: false, 
-        error: "Missing query. Use format: /app/?query=songname" 
-      });
+      return res.status(400).json({ error: "Missing query. Please provide a search term." });
     }
 
-    // 3. Map your simple 'type' parameters to Gaana's actual Android subtypes
-    let subtype = '';
     const reqType = type.toLowerCase().trim();
-    
-    if (reqType === 'tracks') subtype = 'search_song';
-    else if (reqType === 'album') subtype = 'search_album';
-    else if (reqType === 'playlist') subtype = 'search_playlist';
-    else if (reqType === 'artist') subtype = 'search_artist';
-    // If 'all', we leave subtype empty, which tells Gaana to search everything.
 
-    // 4. Build the secret Gaana Android App API URL (Unblockable)
-    const gaanaUrl = new URL('https://api.gaana.com/index.php');
-    gaanaUrl.searchParams.append('type', 'search'); // Main action
-    
-    if (subtype) {
-      gaanaUrl.searchParams.append('subtype', subtype); // Search specific type
+    // 2. Map types for Web API
+    const gsearchIncludes = {
+      all: 'allItems', tracks: 'track', album: 'album', playlist: 'playlist', artist: 'artist'
+    };
+    const includeType = gsearchIncludes[reqType] || 'allItems';
+
+    // 3. ATTEMPT 1: GSearch Web API (Supports Limits & Languages)
+    const gsearchUrl = `https://gsearch.gaana.com/vichitih/go/v2/?geoLocation=GLOBAL&query=${encodeURIComponent(query)}&content_filter=2&include=${includeType}&isRegSrch=0&webVersion=mix&rType=web&startIndex=${offset}&usrLang=${encodeURIComponent(language)}`;
+
+    let response = await fetch(gsearchUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Accept': 'application/json, text/plain, */*',
+        'Origin': 'https://gaana.com',
+        'Referer': 'https://gaana.com/'
+        // CRITICAL FIX: Intentionally left out Accept-Encoding to prevent the "Blank Text" Vercel bug!
+      }
+    });
+
+    let text = await response.text();
+
+    // If Web API successfully returns data without giving the 0-count error
+    if (text && text.trim().startsWith('{') && !text.includes('"user-token-status": 0')) {
+       const json = JSON.parse(text);
+       if ((json[includeType] && json[includeType] !== null) || json.count > 0 || json.data) {
+           res.setHeader('Content-Type', 'application/json');
+           return res.status(200).send(text);
+       }
     }
-    
-    gaanaUrl.searchParams.append('key', query); // The search text
-    gaanaUrl.searchParams.append('usrLang', language); // e.g. English,Hindi,Bhojpuri
-    gaanaUrl.searchParams.append('limit', limit);
-    gaanaUrl.searchParams.append('limit_offset', offset); // Gaana pagination
-    gaanaUrl.searchParams.append('startIndex', offset);   // Backup pagination fallback
 
-    // 5. Fetch pretending to be the Official Android App
-    const response = await fetch(gaanaUrl.toString(), {
+    // 4. ATTEMPT 2: Fallback to Mobile API (Unblockable)
+    // Map types for Mobile API
+    const mobileIncludes = {
+      tracks: 'search_song', album: 'search_album', playlist: 'search_playlist', artist: 'search_artist'
+    };
+    const subtype = mobileIncludes[reqType] || '';
+
+    const mobileUrl = new URL('https://api.gaana.com/index.php');
+    mobileUrl.searchParams.append('type', 'search');
+    if (subtype) mobileUrl.searchParams.append('subtype', subtype);
+    mobileUrl.searchParams.append('content_filter', '2');
+    mobileUrl.searchParams.append('key', query);
+    // CRITICAL FIX: Do NOT append language or limits here! It crashes the mobile API.
+
+    response = await fetch(mobileUrl.toString(), {
       method: 'GET',
       headers: {
         'User-Agent': 'Dalvik/2.1.0 (Linux; U; Android 10; Pixel 3a Build/QQ3A.200805.001)',
-        'Accept': 'application/json, text/plain, */*',
         'deviceType': 'GaanaAndroidApp',
         'appVersion': 'V5'
       }
     });
 
-    const data = await response.text();
-    
-    // 6. Return the pure JSON data directly to your frontend
+    text = await response.text();
     res.setHeader('Content-Type', 'application/json');
-    return res.status(200).send(data);
+    return res.status(200).send(text);
 
   } catch (error) {
-    return res.status(500).json({ success: false, error: 'API crashed', details: error.message });
+    return res.status(500).json({ error: 'API crashed', details: error.message });
   }
 }
